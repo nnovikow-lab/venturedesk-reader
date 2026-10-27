@@ -203,7 +203,7 @@ html[data-font="sans"] .qhead h1{font-family:var(--sans);font-weight:700}
       <button class="chip on" data-f="all">All</button>
       <button class="chip" data-f="unread">Unread</button>
       <button class="chip" data-f="dive">Deep dives</button>
-      <button class="chip" data-f="brief">Briefs</button>
+      <button class="chip" data-f="brief">Mornings</button>
       <button class="chip" data-f="top">★ 4+</button>
       <button class="chip" data-f="saved">With highlights</button>
     </div>
@@ -398,7 +398,8 @@ function dayLabel(iso) {
 }
 const STAR_LBL = ["Tap to rate", "Not for me", "Meh", "Solid", "Really good", "Excellent — more like this"];
 const starStr = (n) => `<span class="st" aria-label="${n} of 5 stars">${"★".repeat(n)}<i>${"★".repeat(5 - n)}</i></span>`;
-const topicKey = (x) => (x.type === "morning_brief" ? "Morning Briefs" : x.topic || "Deep dive");
+const topicKey = (x) => (x.type === "morning_brief" ? "Mornings" : x.topic || "Deep dive");
+const morningKind = (t) => (/^Founder/.test(t || "") ? "Founder's Morning" : "Morning Brief");
 
 // ---------- sheets ----------
 function openSheet(id, scrimClear) {
@@ -435,7 +436,7 @@ function renderTopicChip() {
 function openTopics() {
   const counts = new Map();
   for (const x of S.items || []) counts.set(topicKey(x), (counts.get(topicKey(x)) || 0) + 1);
-  const topics = [...counts.entries()].sort((a, b) => (a[0] === "Morning Briefs" ? -1 : b[0] === "Morning Briefs" ? 1 : b[1] - a[1] || a[0].localeCompare(b[0])));
+  const topics = [...counts.entries()].sort((a, b) => (a[0] === "Mornings" ? -1 : b[0] === "Mornings" ? 1 : b[1] - a[1] || a[0].localeCompare(b[0])));
   $("#tlist").innerHTML = `<div class="th">Filter by topic</div>` +
     `<button data-t="" class="${S.topic ? "" : "on"}">All topics<span>${(S.items || []).length}</span></button>` +
     topics.map(([t, n]) => `<button data-t="${esc(t)}" class="${S.topic === t ? "on" : ""}">${esc(t)}<span>${n}</span></button>`).join("");
@@ -463,7 +464,7 @@ function renderList() {
   const items = filtered();
   if (!items.length) {
     list.innerHTML = S.filter === "all" && !S.topic
-      ? `<div class="empty"><b>Nothing here yet</b>Your briefs and deep dives will land here.</div>`
+      ? `<div class="empty"><b>Nothing here yet</b>Your mornings and deep dives will land here.</div>`
       : `<div class="empty"><b>Nothing matches</b>${S.filter === "unread" && !S.topic ? "You're all caught up." : S.filter === "top" ? "Nothing rated 4★ or higher here yet." : "Try another filter."}</div>`;
     return;
   }
@@ -471,12 +472,12 @@ function renderList() {
   for (const x of items) {
     if (x.date !== day) { day = x.date; html += `<div class="day">${esc(dayLabel(day))}</div>`; }
     const brief = x.type === "morning_brief";
-    const kick = brief ? "Morning Brief" : "Deep Dive · " + x.topic;
-    const stories = brief && x.stories.length ? `<ul class="stories">${x.stories.slice(0, 3).map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : "";
+    const kick = brief ? morningKind(x.title) : "Deep Dive · " + x.topic;
+    const stories = brief && x.stories.length ? `<ul class="stories">${x.stories.slice(0, 4).map((s) => `<li>${esc(s)}</li>`).join("")}</ul>` : "";
     const meta = [`${x.mins} min`, x.hl ? `✨ ${x.hl}` : "", x.stars ? starStr(x.stars) : "", x.hw ? (x.hw.a >= x.hw.t ? "✍️ Done" : `✍️ ${x.hw.a}/${x.hw.t}`) : "", x.read ? "✓ Read" : ""].filter(Boolean).map((m) => `<span>${m}</span>`).join("");
     html += `<button class="item${x.read ? " read" : ""}" data-id="${x.id}">
       <div class="kick">${x.read ? "" : '<span class="dot"></span>'}${esc(kick)}</div>
-      <h3>${esc(brief ? x.title.replace(/^Morning Brief\s*[—-]\s*/, "") || x.title : x.title)}</h3>${stories}
+      <h3>${esc(brief ? x.title.replace(/^(Morning Brief|Founder's Morning)\s*[—-]\s*/, "") || x.title : x.title)}</h3>${stories}
       <div class="meta">${meta}</div></button>`;
   }
   list.innerHTML = html;
@@ -686,7 +687,7 @@ function renderHighlights() {
   for (const h of hs) { if (!groups.has(h.piece)) groups.set(h.piece, { h, list: [] }); groups.get(h.piece).list.push(h); }
   let html = `<div class="hlbar"><span>${hs.length} highlight${hs.length === 1 ? "" : "s"}</span><button id="hlExport">Send all to chat</button></div>`;
   for (const [pid, g] of groups) {
-    const kind = g.h.type === "morning_brief" ? "Morning Brief" : "Deep Dive";
+    const kind = g.h.type === "morning_brief" ? morningKind(g.h.title) : "Deep Dive";
     html += `<div class="hgroup"><div class="hpiece">${kind} · ${esc(g.h.date ? dayLabel(g.h.date).replace(/^(Today|Yesterday) · /, "") : "")}<em>${esc(g.h.title)}</em></div>`;
     for (const h of g.list.slice().reverse()) {
       html += `<blockquote class="hq" data-p="${pid}" data-h="${h.id}"><p>${esc(h.quote)}</p>
@@ -800,7 +801,7 @@ async function openPiece(id, opts = {}) {
 }
 function renderPiece(p) {
   const brief = p.type === "morning_brief";
-  $("#rKick").textContent = brief ? "Morning Brief" : "Deep Dive · " + p.topic;
+  $("#rKick").textContent = brief ? morningKind(p.title) : "Deep Dive · " + p.topic;
   $("#rTitle").textContent = p.title;
   $("#rTitleMini").textContent = p.title;
   $("#rMeta").textContent = `${p.date} · ${p.mins} min read`;

@@ -50,13 +50,48 @@ const RATINGS: [string, string][] = [["useful", "💡 Useful"], ["interesting", 
 const STAR_OF: Record<string, number> = { useful: 5, interesting: 4, not_much: 2 }; // legacy emoji buttons → stars
 const starsTxt = (n: number) => `${n}/5 stars`;
 
-const BRIEF_SYSTEM = (today: string) => `You are VentureDesk, a sharp business-intelligence briefing service for a first-time SaaS founder building a career management platform called VitaeCu. He wants to think like a CEO.
+// Founder's Morning: a daily primer on PRIMER_PER_DAY curriculum topics, rotating so every topic returns every few days.
+const PRIMER_PER_DAY = 4;
 
-Today is ${today}. Use web search (at most 3 searches — make each one broad and well-chosen) to find 3–5 notable developments in tech, startups, or venture capital published in the past 24 hours. Only include items you can confirm are from that window; if you can't find enough, include fewer rather than older news. For each: a bold headline, what happened in one or two sentences, and — more importantly — what it signals strategically and why a SaaS founder should care. Include one source link per item. End with a "Market Pulse" section naming one broader pattern across the day's news.
+const PRIMER_SYSTEM = (today: string, topics: string) => `You are VentureDesk, a demanding business mentor. Every morning you send "Founder's Morning": a short primer that keeps a first-time founder sharp across his whole curriculum. He is building VitaeCu, a pre-seed career-management SaaS, with two co-founders (not U.S. persons), and is learning to operate as a CEO.
 
-Be dense, direct, and analytically rigorous. No preamble, no sign-off, no filler, and never narrate your searching. 400–700 words.
+Today is ${today}. Today's topics, in this order:
+${topics}
 
-FORMATTING (strict): Output Telegram-compatible HTML only. Allowed tags: <b>, <i>, <a href="...">. No other tags, no Markdown, no headings with #, no bullet characters other than "•". Use blank lines between items.`;
+For EACH topic write exactly two items:
+• <b>To-do:</b> one concrete action for VitaeCu he can finish this week, specific enough to start in the next hour (who, what, an output he can point to). Not advice to "think about" something. If an earlier to-do on this topic is still worth doing and there's no sign he did it, push it again more sharply instead of inventing a new one.
+• <b>Reflect:</b> one sharp idea, tension, or question that builds judgment on the topic — a compressed version of what a great deep dive would make him realize. 2–3 sentences. Build on what he has already read, highlighted, and answered (below); never restate it, and never repeat an item from an earlier Founder's Morning.
+
+Then, only if web search (at most 2 searches) finds something from the past 48 hours that materially changes how he should think about one of today's topics, add one final section titled "Worth Knowing": the item in 2 sentences, why it matters for that topic, and one source link. If nothing qualifies, leave the section out entirely — no filler news.
+
+Be direct and specific to VitaeCu. No preamble, no sign-off, no motivational filler, and never narrate your searching. 300–500 words in total.
+
+STRUCTURE (strict): One section per topic. Start each with its title on its own line wrapped in <b></b>, exactly as given above (e.g. <b>Monetization</b>). Put the exact line "===SECTION===" between sections.
+
+FORMATTING (strict): Output Telegram-compatible HTML only. Allowed tags: <b>, <i>, <a href="...">. No other tags, no Markdown. Use blank lines between items.`;
+
+/** What he has already covered on each of today's topics: deep dives, saved highlights, challenge answers. */
+async function primerContext(idxs: number[]) {
+  const parts: string[] = [];
+  for (const t of idxs) {
+    const { data: dives } = await sb.from("message_log").select("id,title").eq("type", "evening_deep_dive").eq("status", "sent")
+      .eq("topic_index", t).is("custom_topic", null).order("sent_at", { ascending: false }).limit(4);
+    const ids = (dives ?? []).map((d: Any) => d.id);
+    const lines: string[] = [];
+    if (dives?.length) lines.push(`Deep dives he read: ${dives.map((d: Any) => `"${d.title ?? "untitled"}"`).join("; ")}`);
+    if (ids.length) {
+      const { data: hl } = await sb.from("highlights").select("quote").in("message_id", ids).order("created_at", { ascending: false }).limit(3);
+      for (const h of hl ?? []) lines.push(`Highlighted: "${String(h.quote).slice(0, 220)}"`);
+      const { data: ans } = await sb.from("challenge_answers").select("question,answer").in("message_id", ids).order("updated_at", { ascending: false }).limit(3);
+      for (const a of ans ?? []) lines.push(`His answer to "${String(a.question).slice(0, 120)}": "${String(a.answer).slice(0, 300)}"`);
+    }
+    parts.push(`${CURRICULUM[t][0]}:\n${lines.length ? lines.map((l) => `- ${l}`).join("\n") : "- Nothing covered yet."}`);
+  }
+  const { data: prev } = await sb.from("message_log").select("content,local_date").eq("type", "morning_brief").eq("status", "sent")
+    .not("primer_topics", "is", null).order("sent_at", { ascending: false }).limit(3);
+  const past = (prev ?? []).map((p: Any) => `[${p.local_date}]\n${stripTags(String(p.content ?? "").replace(/===SECTION===/g, "")).slice(0, 2200)}`);
+  return `\n\nWHAT HE HAS ALREADY COVERED ON TODAY'S TOPICS:\n${parts.join("\n\n")}${past.length ? `\n\nEARLIER FOUNDER'S MORNINGS (don't repeat these items; follow up on to-dos where it makes sense):\n${past.join("\n\n")}` : ""}`;
+}
 
 const DIVE_SYSTEM = (name: string, subs: string, extra = "") => `You are VentureDesk, a demanding business mentor delivering a long-form deep dive to a first-time SaaS founder building a career management platform called VitaeCu. He is learning to operate as a CEO.
 
@@ -76,7 +111,7 @@ FORMATTING (strict): Output Telegram-compatible HTML only. Allowed tags: <b>, <i
 
 const HELP = `Commands:
 /library — open your reading library
-/brief — Morning Brief right now
+/brief — Founder's Morning right now (4 curriculum topics: a to-do + a reflection each)
 /deepdive — next curriculum deep dive now
 /deepdive <any topic> — custom deep dive (doesn't move the curriculum)
 /next — what tonight's deep dive covers
@@ -234,7 +269,7 @@ function cardHtml(job: Any) {
   const mins = readMins(job.words);
   if (job.type === "morning_brief") {
     const stories = storiesOf(job.headline).slice(0, 5);
-    return `☀️ <b>${txt(job.title ?? "Morning Brief")}</b>\n<i>${stories.length ? `${stories.length} stories · ` : ""}${mins} min read</i>${stories.length ? `\n\n${stories.map((s: string) => `• ${txt(s)}`).join("\n")}` : ""}`;
+    return `☀️ <b>${txt(job.title ?? "Morning Brief")}</b>\n<i>${stories.length ? `${stories.length} ${job.primer_topics ? "topics" : "stories"} · ` : ""}${mins} min read</i>${stories.length ? `\n\n${stories.map((s: string) => `• ${txt(s)}`).join("\n")}` : ""}`;
   }
   return `📘 <b>${txt(job.title ?? topicOf(job))}</b>\n<i>Deep Dive · ${txt(topicOf(job))} · ${mins} min read</i>\n\n${txt(teaserOf(job.content ?? ""))}`;
 }
@@ -263,13 +298,13 @@ function headlineOf(type: JobType, content: string, topic: string) {
 }
 
 const topicOf = (job: Any) =>
-  job.type === "morning_brief" ? "Tech, startups & venture capital"
+  job.type === "morning_brief" ? (job.primer_topics?.length ? job.primer_topics.map((i: number) => CURRICULUM[i]?.[0]).filter(Boolean).join(" · ") : "Tech, startups & venture capital")
     : job.custom_topic ?? (job.topic_index !== null && job.topic_index !== undefined ? CURRICULUM[job.topic_index][0] : job.headline ?? "Deep dive");
 
 function docOf(cfg: Any, job: Any): Doc {
   const date = new Intl.DateTimeFormat("en-US", { timeZone: cfg.timezone, month: "long", day: "numeric", year: "numeric" })
     .format(new Date(job.sent_at ?? job.created_at));
-  const kind = job.type === "morning_brief" ? "Morning Brief" : "Deep Dive";
+  const kind = job.type === "morning_brief" ? (/^Founder/.test(job.title ?? "") ? "Founder's Morning" : "Morning Brief") : "Deep Dive";
   const topic = topicOf(job);
   return { title: job.title ?? (job.type === "morning_brief" ? `Morning Brief — ${date}` : topic), kind, date, topic, content: job.content };
 }
@@ -297,8 +332,8 @@ async function updateProfile(cfg: Any, job: Any, who: string, rating: string | n
   const { text } = await claude({
     model: CHEAP_MODEL,
     max_tokens: 500,
-    system: `You maintain a compact profile of what a reader finds valuable in business-intelligence content (morning news briefs and long-form deep dives for a first-time SaaS founder). You get the current profile and one new reaction. Return ONLY the updated profile: at most ~140 words, short plain-text lines under "Values:", "Less of:", and "Notes:". Keep supported lessons, sharpen them with new evidence, drop contradicted ones. Ratings are 1–5 stars: a single 3★ is weak evidence; 1–2★ or 5★, written words, saved highlights, and repeated patterns are strong evidence.`,
-    user: `Current profile:\n${cfg.style_profile}\n\nPiece: ${job.type === "morning_brief" ? "Morning Brief" : "Deep dive"} — ${job.title ?? job.headline ?? "?"}\nReaction from ${who}:${rating ? ` rated ${rating.replace("_", " ")}.` : ""}${feedback ? ` Said: "${feedback}"` : ""}${highlight ? ` Saved this passage as a highlight: "${highlight.slice(0, 600)}"` : ""}\n\nReturn the updated profile.`,
+    system: `You maintain a compact profile of what a reader finds valuable in business-intelligence content for a first-time SaaS founder (a short daily primer with to-dos and reflections across his curriculum, and long-form deep dives). You get the current profile and one new reaction. Return ONLY the updated profile: at most ~140 words, short plain-text lines under "Values:", "Less of:", and "Notes:". Keep supported lessons, sharpen them with new evidence, drop contradicted ones. Ratings are 1–5 stars: a single 3★ is weak evidence; 1–2★ or 5★, written words, saved highlights, and repeated patterns are strong evidence.`,
+    user: `Current profile:\n${cfg.style_profile}\n\nPiece: ${job.type === "morning_brief" ? (job.primer_topics ? "Founder's Morning (daily primer: a to-do + a reflection per topic)" : "Morning Brief") : "Deep dive"} — ${job.title ?? job.headline ?? "?"}\nReaction from ${who}:${rating ? ` rated ${rating.replace("_", " ")}.` : ""}${feedback ? ` Said: "${feedback}"` : ""}${highlight ? ` Saved this passage as a highlight: "${highlight.slice(0, 600)}"` : ""}\n\nReturn the updated profile.`,
   });
   await sb.from("config").update({ style_profile: text, updated_at: new Date().toISOString() }).eq("id", 1);
 }
@@ -317,14 +352,20 @@ async function process(cfg: Any, job: Any) {
       let title: string | null = null;
       let res;
       if (type === "morning_brief") {
+        const start = (cfg.primer_index ?? 0) % CURRICULUM.length;
+        const idxs = Array.from({ length: Math.min(PRIMER_PER_DAY, CURRICULUM.length) }, (_, i) => (start + i) % CURRICULUM.length);
+        job.primer_topics = idxs;
+        const names = idxs.map((i) => CURRICULUM[i][0]);
         res = await claude({
-          model: MODEL, system: BRIEF_SYSTEM(now.pretty) + ctx, user: "Write the Morning Brief now.",
-          max_tokens: 12000, effort: "medium", tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 3 }],
+          model: MODEL, system: PRIMER_SYSTEM(now.pretty, names.map((n, i) => `${i + 1}. ${n} — ${CURRICULUM[idxs[i]][1]}`).join("\n")) + (await primerContext(idxs)) + ctx,
+          user: "Write today's Founder's Morning now.",
+          max_tokens: 8000, effort: "medium", tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 2 }],
         });
         content = res.text;
         const firstBold = content.indexOf("<b>");
         if (firstBold > 0 && firstBold < 600) content = content.slice(firstBold);
-        title = `Morning Brief — ${new Intl.DateTimeFormat("en-US", { timeZone: cfg.timezone, month: "long", day: "numeric", year: "numeric" }).format(new Date())}`;
+        title = `Founder's Morning — ${new Intl.DateTimeFormat("en-US", { timeZone: cfg.timezone, month: "long", day: "numeric", year: "numeric" }).format(new Date())}`;
+        topic = names.join(" | ");
       } else {
         const [name, subs, extra] = job.custom_topic ? [job.custom_topic, "", ""] : CURRICULUM[job.topic_index ?? 0];
         topic = name;
@@ -346,10 +387,11 @@ async function process(cfg: Any, job: Any) {
       job.title = title;
       job.content = content;
       job.words = wordCount(content);
-      job.headline = headlineOf(type, content, topic);
+      job.headline = job.primer_topics ? topic : headlineOf(type, content, topic);
       const partsTotal = useCards(cfg) ? 1 : cleanAndSplit(displayOf(job, content)).length;
       await sb.from("message_log").update({
         content, title, headline: job.headline, words: job.words, parts_total: partsTotal, gen_ms: Date.now() - t0, meta: res.meta,
+        primer_topics: job.primer_topics ?? null,
       }).eq("id", job.id);
     }
 
@@ -374,6 +416,9 @@ async function process(cfg: Any, job: Any) {
     await sb.from("message_log").update({ status: "sent", sent_at: new Date().toISOString(), error: null }).eq("id", job.id);
     if (type === "evening_deep_dive" && !job.challenge) EdgeRuntime.waitUntil(extractChallenge(job).catch((e) => console.error("challenge", e)));
     if (cfg.drive_url) EdgeRuntime.waitUntil(saveToDrive(cfg, job).catch((e) => console.error("drive", e)));
+    if (type === "morning_brief" && job.primer_topics?.length) {
+      await sb.from("config").update({ primer_index: (job.primer_topics[job.primer_topics.length - 1] + 1) % CURRICULUM.length }).eq("id", 1);
+    }
     if (type === "evening_deep_dive" && !job.custom_topic && job.topic_index !== null) {
       await sb.from("config").update({ topic_index: (job.topic_index + 1) % CURRICULUM.length, updated_at: new Date().toISOString() })
         .eq("id", 1).eq("topic_index", job.topic_index);
@@ -383,7 +428,7 @@ async function process(cfg: Any, job: Any) {
     const final = job.trigger === "manual" || job.attempts >= 3;
     await sb.from("message_log").update({ status: final ? "failed" : "pending", error: msg }).eq("id", job.id);
     if (final) {
-      await tg("sendMessage", { chat_id: cfg.chat_id, text: `⚠️ Couldn't deliver the ${type === "morning_brief" ? "Morning Brief" : "deep dive"}${job.trigger === "manual" ? ". Try again in a minute." : " after 3 attempts."}\n${msg.slice(0, 250)}` });
+      await tg("sendMessage", { chat_id: cfg.chat_id, text: `⚠️ Couldn't deliver the ${type === "morning_brief" ? "Founder's Morning" : "deep dive"}${job.trigger === "manual" ? ". Try again in a minute." : " after 3 attempts."}\n${msg.slice(0, 250)}` });
     }
     throw e;
   }
@@ -427,7 +472,7 @@ async function nudges(cfg: Any) {
     await sb.from("message_log").update({ nudged_at: new Date().toISOString() }).eq("id", m.id);
     const cards = useCards(cfg);
     const tags = cards ? "" : unread.map(([id, name]) => `<a href="tg://user?id=${id}">${escHtml(name)}</a>`).join(", ");
-    const what = m.type === "morning_brief" ? "today's Morning Brief" : `"${escHtml(m.title ?? m.headline ?? "the deep dive")}"`;
+    const what = m.type === "morning_brief" ? "today's Founder's Morning" : `"${escHtml(m.title ?? m.headline ?? "the deep dive")}"`;
     const r = await tg("sendMessage", {
       chat_id: cfg.chat_id,
       parse_mode: "HTML",
@@ -643,7 +688,7 @@ async function api(req: Request, route: string) {
   switch (route) {
     case "list": {
       const { data: pcs } = await sb.from("message_log")
-        .select("id,type,title,headline,custom_topic,topic_index,local_date,sent_at,created_at,words,challenge")
+        .select("id,type,title,headline,custom_topic,topic_index,primer_topics,local_date,sent_at,created_at,words,challenge")
         .eq("status", "sent").order("sent_at", { ascending: false }).limit(200);
       const acount = await answeredCounts(uid);
       if ((pcs ?? []).some((j: Any) => j.type === "evening_deep_dive" && j.challenge == null)) EdgeRuntime.waitUntil(backfillChallenges(5).catch((e) => console.error(e)));
@@ -894,7 +939,7 @@ async function handleUpdate(u: Any) {
         reply_markup: { inline_keyboard: [[{ text: "Open library", web_app: { url: cfg.app_url } }]] },
       });
     case "/brief":
-      await say("⏳ Scanning the last 24 hours… (about a minute)");
+      await say("⏳ Preparing your Founder's Morning… (about a minute)");
       return runManual(cfg, "morning_brief", null).catch((e) => console.error(e));
     case "/deepdive": {
       const topic = arg || null;
@@ -915,11 +960,11 @@ async function handleUpdate(u: Any) {
       const m = arg.toLowerCase().match(/^(brief|morning|dive|deepdive|evening)\s+(.+)$/);
       const t = m ? parseTime(m[2]) : null;
       if (!m || !t) {
-        return say(`Schedule (Pacific):\nMorning Brief: ${fmtTime(cfg.brief_time)}\nDeep Dive: ${fmtTime(cfg.dive_time)}\n\nChange: /times brief 6:30am · /times dive 8pm`);
+        return say(`Schedule (Pacific):\nFounder's Morning: ${fmtTime(cfg.brief_time)}\nDeep Dive: ${fmtTime(cfg.dive_time)}\n\nChange: /times brief 6:30am · /times dive 8pm`);
       }
       const field = /^(brief|morning)$/.test(m[1]) ? "brief_time" : "dive_time";
       await sb.from("config").update({ [field]: t }).eq("id", 1);
-      return say(`${field === "brief_time" ? "Morning Brief" : "Deep Dive"} now at ${fmtTime(t)}.`);
+      return say(`${field === "brief_time" ? "Founder's Morning" : "Deep Dive"} now at ${fmtTime(t)}.`);
     }
     case "/drive": {
       if (!cfg.drive_url) return say("Google Drive isn't connected yet.");
@@ -976,7 +1021,7 @@ async function register(cfg: Any) {
   await tg("setMyCommands", {
     commands: [
       { command: "library", description: "Open your reading library" },
-      { command: "brief", description: "Morning Brief right now" },
+      { command: "brief", description: "Founder's Morning right now" },
       { command: "deepdive", description: "Deep dive now (add a topic for a custom one)" },
       { command: "next", description: "Next curriculum topic" },
       { command: "topic", description: "Choose the next curriculum topic" },
