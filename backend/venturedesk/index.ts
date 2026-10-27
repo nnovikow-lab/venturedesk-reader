@@ -28,6 +28,9 @@ const CORS = {
 // Tech topic: CEO judgment about technology, not a technical tutorial.
 const TECH_LENS = `This topic is about technology seen through a CEO's eyes — judgment, not a tutorial. Keep the same MBA-style essay voice as every other deep dive. Each time this topic comes up, pick ONE angle from the subtopics (or a sharp cross-cutting question) and treat it as a business decision: who owns it, what it costs, what can go wrong, and what good judgment looks like. Explain a technical term only as far as the decision requires — never a glossary, never code. Use real company examples where technology choices made or broke the business. Before the Founder's Challenge, add a short section titled "Questions Worth Asking Your Engineer": 4–6 questions, each with one line on what a reassuring answer and a worrying answer sound like.`;
 
+// Legal topic: the founder's legal and tax architecture, taught as decisions and their consequences, not as legal advice.
+const LEGAL_LENS = `This topic is the legal and tax architecture of an early-stage startup, taught for a pre-seed founder who is setting VitaeCu up now and has co-founders who are not U.S. persons. Keep the same MBA-style essay voice as every other deep dive. Each time this topic comes up, pick ONE angle from the subtopics (or a sharp cross-cutting question) and treat it as a set of decisions with consequences: what to decide, by when, what it costs to get wrong, and what it costs to fix later. Be concrete about mechanics, deadlines, forms, and typical costs where they are well established, and say plainly where the answer depends on facts or on the co-founders' home countries. Use real startup cases where structure choices helped or hurt a company or a fundraise. Treat this as education, not legal or tax advice: never tell him what to sign; show him what a good lawyer or accountant would weigh. Before the Founder's Challenge, add a short section titled "Questions Worth Asking Your Startup Lawyer": 4–6 questions, each with one line on what a reassuring answer and a worrying answer sound like.`;
+
 const CURRICULUM: [string, string, string?][] = [
   ["Monetization", "pricing strategy, freemium, usage-based pricing, tier design, value metric selection, expansion revenue"],
   ["Fundraising & Capital", "pre-seed to Series A mechanics, SAFEs, cap tables, investor psychology, pitch narrative, term sheet red flags, VC vs. bootstrapping"],
@@ -40,6 +43,7 @@ const CURRICULUM: [string, string, string?][] = [
   ["Unit Economics & Finance", "CAC, LTV, payback, burn, runway, founder financial modeling"],
   ["Leadership & CEO Craft", "decisions under uncertainty, board management, communication as leadership, managing yourself as a first-time CEO"],
   ["Technology Leadership for the Non-Technical CEO", "how the product's architecture shapes the business; data as an asset and a liability; build vs. buy and vendor lock-in; the AI layer's cost structure and quality risk; security and privacy as a sales asset for enterprise buyers; payments and billing infrastructure; infrastructure cost as a gross-margin lever; shipping speed vs. technical debt; reliability and incident response; evaluating and trusting your engineering team", TECH_LENS],
+  ["Legal & Corporate Structure for Founders", "why investors expect a Delaware C-Corp, and when an LLC or another state is a mistake; incorporation mechanics (lawyer vs. Stripe Atlas or Clerky) and the Delaware franchise-tax trap; founder stock, vesting, cliffs, acceleration, and the 30-day 83(b) election; IP assignment and invention agreements so the company actually owns VitaeCu; documenting an equity split between co-founders; foreign co-founders and shareholders (U.S. tax status, W-8BEN, withholding, home-country taxation, Form 5472 when a U.S. corporation is 25% foreign-owned, banking and KYC, why S-Corps are off the table); QSBS (Section 1202) and who benefits; raising on SAFEs legally (Reg D, accredited investors, Form D, state filings); hiring contractors vs. employees and option plans (409A); privacy and data-protection law for a product that stores people's career records (CCPA, GDPR); terms of service, trademarks, and protecting the brand; choosing and working with a startup lawyer (flat fees, deferred fees, what to ask, red flags)", LEGAL_LENS],
 ];
 
 const RATINGS: [string, string][] = [["useful", "💡 Useful"], ["interesting", "🤔 Interesting"], ["not_much", "😐 Not so much"]];
@@ -76,7 +80,7 @@ const HELP = `Commands:
 /deepdive — next curriculum deep dive now
 /deepdive <any topic> — custom deep dive (doesn't move the curriculum)
 /next — what tonight's deep dive covers
-/topic <1-11> — choose the next curriculum topic
+/topic <1-12> — choose the next curriculum topic
 /times — show schedule · /times brief 6:30am · /times dive 8pm
 /stats — reading accountability
 /drive — Google Drive auto-save status and folders
@@ -475,10 +479,12 @@ const DRIVE_KINDS: Record<string, { label: string; folder: string }> = {
   evening_deep_dive: { label: "Deep Dive", folder: "Deep Dives" },
   morning_brief: { label: "Morning Brief", folder: "Morning Briefs" },
 };
+// Morning Briefs go to Drive only once config.drive_briefs is on (needs the updated Apps Script that finds a moved VentureDesk folder).
+const driveTypes = (cfg: Any) => Object.keys(DRIVE_KINDS).filter((t) => t !== "morning_brief" || cfg.drive_briefs);
 
 /** Saves a piece's PDF to its Drive folder once; records the file link on the piece. */
 async function saveToDrive(cfg: Any, job: Any) {
-  if (!cfg.drive_url || !DRIVE_KINDS[job.type] || job.drive_file_id || !job.content) return null;
+  if (!cfg.drive_url || !driveTypes(cfg).includes(job.type) || job.drive_file_id || !job.content) return null;
   const doc = docOf(cfg, job);
   const name = `${job.local_date} — ${doc.title.replace(/[\\/:*?"<>|]+/g, "-").slice(0, 120)}.pdf`;
   const j = await driveCall(cfg, { folder: DRIVE_KINDS[job.type].folder, name, mime: "application/pdf", data: toBase64(await toPdf(doc)) });
@@ -493,7 +499,7 @@ async function saveToDrive(cfg: Any, job: Any) {
 
 async function backfillDrive(cfg: Any, limit = 1, sinceDays?: number) {
   if (!cfg.drive_url) return { saved: 0, failed: 0 };
-  let q = sb.from("message_log").select("*").in("type", Object.keys(DRIVE_KINDS)).eq("status", "sent").is("drive_file_id", null).not("content", "is", null);
+  let q = sb.from("message_log").select("*").in("type", driveTypes(cfg)).eq("status", "sent").is("drive_file_id", null).not("content", "is", null);
   if (sinceDays) q = q.gt("sent_at", new Date(Date.now() - sinceDays * 86400e3).toISOString());
   const { data } = await q.order("sent_at", { ascending: true }).limit(limit);
   let saved = 0, failed = 0, error = "";
@@ -919,7 +925,8 @@ async function handleUpdate(u: Any) {
       if (!cfg.drive_url) return say("Google Drive isn't connected yet.");
       const lines: string[] = [];
       const buttons: Any[] = [];
-      for (const [t, k] of Object.entries(DRIVE_KINDS)) {
+      for (const t of driveTypes(cfg)) {
+        const k = DRIVE_KINDS[t];
         const { count: saved } = await sb.from("message_log").select("id", { count: "exact", head: true }).eq("type", t).not("drive_url", "is", null);
         const { count: pending } = await sb.from("message_log").select("id", { count: "exact", head: true }).eq("type", t).eq("status", "sent").is("drive_file_id", null).not("content", "is", null);
         const url = cfg.drive_folders?.[t]?.url;
