@@ -557,7 +557,8 @@ async function backfillDrive(cfg: Any, limit = 1, sinceDays?: number) {
 
 // ---------- VitaeCu project state (meeting decisions, kept in Drive by the meetings project) ----------
 
-const STATE_MAX = 40_000; // ~10k tokens; the file is ~25 KB today
+const STATE_MAX = 150_000; // ~37k tokens; the file was ~25K characters in Nov 2026. /state warns as it gets close.
+const STATE_WARN = 0.85;
 
 /** Latest "VitaeCu - Project State.md" via the Apps Script; empty string if unavailable, so generation never blocks on it. */
 async function fetchState(cfg: Any) {
@@ -1021,7 +1022,13 @@ async function handleUpdate(u: Any) {
           system: `You condense a startup's project-state document (decisions and meeting notes) into a very short status for its founder, read on a phone. Output plain text only, no Markdown, exactly this shape:\nLast meeting: <date> — <meeting title or focus>\n• <what was discussed or decided>  (2–4 bullets, one line each)\nOpen: <the 1–2 most important open action items, with owner if stated>\nAt most 90 words. Use only what the document says; if the date of the last meeting isn't stated, say "date not recorded". Never include salary, compensation, or individual equity figures.`,
           user: st.slice(0, STATE_MAX),
         });
-        return say(`📋 VitaeCu project state\n\n${sum.trim()}\n\n— Read from Drive · file updated ${when ?? "unknown"} · ${Math.round(st.length / 1000)}K characters. The same file feeds every deep dive and Founder's Morning.`);
+        const k = (n: number) => `${Math.round(n / 1000)}K`;
+        const size = st.length > STATE_MAX
+          ? `\n\n⚠️ The file is ${k(st.length)} characters, over the ${k(STATE_MAX)} limit: the last ${k(st.length - STATE_MAX)} (oldest meetings) are being left out. Ask your meetings project to compress older meetings.`
+          : st.length >= STATE_MAX * STATE_WARN
+          ? `\n\n⚠️ The file is ${k(st.length)} of ${k(STATE_MAX)} characters. Ask your meetings project to compress older meetings before it hits the limit.`
+          : "";
+        return say(`📋 VitaeCu project state\n\n${sum.trim()}\n\n— Read from Drive · file updated ${when ?? "unknown"} · ${k(st.length)} of ${k(STATE_MAX)} characters. The same file feeds every deep dive and Founder's Morning.${size}`);
       } catch (e) {
         return say(`⚠️ Couldn't read the project state: ${String((e as Error).message).replace(/^drive: /, "").slice(0, 200)}`);
       }
