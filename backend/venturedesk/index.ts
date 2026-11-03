@@ -118,6 +118,7 @@ const HELP = `Commands:
 /topic <1-12> — choose the next curriculum topic
 /times — show schedule · /times brief 6:30am · /times dive 8pm
 /stats — reading accountability
+/state — VitaeCu project state: last meeting and what was decided
 /drive — Google Drive auto-save status and folders
 /profile — what I've learned about your taste
 /pause · /resume — stop/start scheduled sends
@@ -559,13 +560,19 @@ async function backfillDrive(cfg: Any, limit = 1, sinceDays?: number) {
 const STATE_MAX = 40_000; // ~10k tokens; the file is ~25 KB today
 
 /** Latest "VitaeCu - Project State.md" via the Apps Script; empty string if unavailable, so generation never blocks on it. */
+async function fetchState(cfg: Any) {
+  const j = await driveCall(cfg, { action: "state" });
+  const text = String(j.text ?? "").trim();
+  const when = j.updated ? new Intl.DateTimeFormat("en-US", { timeZone: cfg.timezone, month: "long", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(j.updated)) : null;
+  return { text, when };
+}
+
 async function projectState(cfg: Any) {
   if (!cfg.drive_url) return "";
   try {
-    const j = await driveCall(cfg, { action: "state" });
-    const text = String(j.text ?? "").trim();
+    const { text, when: w } = await fetchState(cfg);
     if (!text) return "";
-    const when = j.updated ? new Intl.DateTimeFormat("en-US", { timeZone: cfg.timezone, month: "long", day: "numeric", year: "numeric" }).format(new Date(j.updated)) : "unknown date";
+    const when = w ?? "unknown date";
     return `\n\nVITAECU PROJECT STATE (the team's current decisions and recent meetings, last updated ${when}). This is the most current and authoritative record of what the founders have decided; where it conflicts with older challenge answers or assumptions, it wins. Use it to make examples, to-dos, and challenges specific to where VitaeCu actually is: build on decisions already made, don't re-litigate settled ones unless there is a strong reason (and say why), and push on open or tentative ones. Follow up on open action items when relevant. Treat budget, equity, and salary figures as private context: use them to reason, but don't restate exact personal compensation or equity numbers unless the point depends on them.\n<project_state>\n${text.slice(0, STATE_MAX)}\n</project_state>`;
   } catch (e) {
     console.error("project state", e);
@@ -1003,6 +1010,22 @@ async function handleUpdate(u: Any) {
         reply_markup: buttons.length ? { inline_keyboard: buttons } : undefined,
       });
     }
+    case "/state": {
+      if (!cfg.drive_url) return say("Google Drive isn't connected, so I can't read the VitaeCu project state.");
+      await say("⏳ Reading the VitaeCu project state…");
+      try {
+        const { text: st, when } = await fetchState(cfg);
+        if (!st) return say("⚠️ I couldn't find \"VitaeCu - Project State.md\" in Drive.");
+        const { text: sum } = await claude({
+          model: CHEAP_MODEL, max_tokens: 600,
+          system: `You condense a startup's project-state document (decisions and meeting notes) into a very short status for its founder, read on a phone. Output plain text only, no Markdown, exactly this shape:\nLast meeting: <date> — <meeting title or focus>\n• <what was discussed or decided>  (2–4 bullets, one line each)\nOpen: <the 1–2 most important open action items, with owner if stated>\nAt most 90 words. Use only what the document says; if the date of the last meeting isn't stated, say "date not recorded". Never include salary, compensation, or individual equity figures.`,
+          user: st.slice(0, STATE_MAX),
+        });
+        return say(`📋 VitaeCu project state\n\n${sum.trim()}\n\n— Read from Drive · file updated ${when ?? "unknown"} · ${Math.round(st.length / 1000)}K characters. The same file feeds every deep dive and Founder's Morning.`);
+      } catch (e) {
+        return say(`⚠️ Couldn't read the project state: ${String((e as Error).message).replace(/^drive: /, "").slice(0, 200)}`);
+      }
+    }
     case "/stats":
       return say(await stats(cfg));
     case "/profile":
@@ -1046,6 +1069,7 @@ async function register(cfg: Any) {
       { command: "topic", description: "Choose the next curriculum topic" },
       { command: "times", description: "Show or change the schedule" },
       { command: "stats", description: "Reading accountability" },
+      { command: "state", description: "VitaeCu: last meeting and decisions" },
       { command: "drive", description: "Google Drive auto-save status" },
       { command: "profile", description: "What I've learned about your taste" },
       { command: "pause", description: "Pause scheduled sends" },
