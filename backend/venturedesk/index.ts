@@ -347,7 +347,7 @@ async function process(cfg: Any, job: Any) {
     if (!content) {
       const t0 = Date.now();
       const now = localNow(cfg.timezone);
-      const ctx = await learningContext(cfg);
+      const ctx = (await learningContext(cfg)) + (await projectState(cfg));
       let topic = "Morning Brief";
       let title: string | null = null;
       let res;
@@ -552,6 +552,25 @@ async function backfillDrive(cfg: Any, limit = 1, sinceDays?: number) {
     try { await saveToDrive(cfg, j); saved++; } catch (e) { failed++; error = String((e as Error).message ?? e); console.error("drive", e); }
   }
   return { saved, failed, error };
+}
+
+// ---------- VitaeCu project state (meeting decisions, kept in Drive by the meetings project) ----------
+
+const STATE_MAX = 40_000; // ~10k tokens; the file is ~25 KB today
+
+/** Latest "VitaeCu - Project State.md" via the Apps Script; empty string if unavailable, so generation never blocks on it. */
+async function projectState(cfg: Any) {
+  if (!cfg.drive_url) return "";
+  try {
+    const j = await driveCall(cfg, { action: "state" });
+    const text = String(j.text ?? "").trim();
+    if (!text) return "";
+    const when = j.updated ? new Intl.DateTimeFormat("en-US", { timeZone: cfg.timezone, month: "long", day: "numeric", year: "numeric" }).format(new Date(j.updated)) : "unknown date";
+    return `\n\nVITAECU PROJECT STATE (the team's current decisions and recent meetings, last updated ${when}). This is the most current and authoritative record of what the founders have decided; where it conflicts with older challenge answers or assumptions, it wins. Use it to make examples, to-dos, and challenges specific to where VitaeCu actually is: build on decisions already made, don't re-litigate settled ones unless there is a strong reason (and say why), and push on open or tentative ones. Follow up on open action items when relevant. Treat budget, equity, and salary figures as private context: use them to reason, but don't restate exact personal compensation or equity numbers unless the point depends on them.\n<project_state>\n${text.slice(0, STATE_MAX)}\n</project_state>`;
+  } catch (e) {
+    console.error("project state", e);
+    return "";
+  }
 }
 
 // ---------- Founder's Challenge (homework) ----------
@@ -1057,6 +1076,10 @@ Deno.serve(async (req) => {
     if (body.action === "backfill_challenges") return Response.json({ extracted: await backfillChallenges(50) });
     if (body.action === "drive_ping") {
       return Response.json(await driveCall(cfg, { action: "ping", folder: body.folder ?? "Deep Dives" }));
+    }
+    if (body.action === "state_check") {
+      const st = await projectState(cfg);
+      return Response.json({ chars: st.length, head: st.slice(0, 400) });
     }
     if (body.action === "drive_backfill") return Response.json(await backfillDrive(cfg, 1));
     if (body.action === "run" && (body.type === "morning_brief" || body.type === "evening_deep_dive")) {
